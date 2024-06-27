@@ -17,8 +17,8 @@ P_NAME, P_LAST_NAME, NATIONAL_ID, DOB, CITY, PHONE = range(6)
 # Constants for validation
 MAX_LENGTH = 100
 PERSIAN_NAME_REGEX = r'^[آ-ی\s]+$'
-MEDICAL_CODE_REGEX = r'^\d+$'  # Only numbers
-POSITIVE_INTEGER_REGEX = r'^[1-9]\d*$'  # Positive integers
+MEDICAL_CODE_REGEX = r'^\d+$'
+POSITIVE_INTEGER_REGEX = r'^[1-9]\d*$'
 PHONE_NUMBER_REGEX = r'^\d{11}$'
 
 # URL صفحه وب
