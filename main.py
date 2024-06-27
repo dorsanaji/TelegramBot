@@ -7,7 +7,7 @@ import jdatetime
 from datetime import datetime, timedelta
 import asyncio
 
-3
+
 
 # Define states for the dentist conversation
 NAME, LAST_NAME, PROFESSION, MEDICAL_CODE = range(4)
