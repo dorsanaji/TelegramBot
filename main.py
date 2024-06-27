@@ -6,9 +6,17 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import jdatetime
 from datetime import datetime, timedelta
 import asyncio
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("peppy-aileron-427715-t9-2c2c475ed163.json", scope)
+client = gspread.authorize(creds)
 
-
+# Open the Google Sheets
+doctors_sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1r6FYG2Otae-kQcGLEB9KHN7cU2tdLJloEKVq_la-hX0/edit?gid=0#gid=0").sheet1
+patients_sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1kd7vvrlOcq1fx0Q9GAD-GHz2GmcIyWmhlFzSsoHOs-I/edit?gid=0#gid=0").sheet1
+verification_sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1peuDMA_D_AQ3hM9b0B7XaumEKkZ4BW2jetjHCw4Ftyo/edit?usp=sharing").sheet1
 # Define states for the dentist conversation
 NAME, LAST_NAME, PROFESSION, MEDICAL_CODE = range(4)
 
@@ -18,37 +26,33 @@ P_NAME, P_LAST_NAME, NATIONAL_ID, DOB, CITY, PHONE = range(6)
 # Constants for validation
 MAX_LENGTH = 100
 PERSIAN_NAME_REGEX = r'^[آ-ی\s]+$'
+CITY_NAME_REGEX = r'^[آ-ی\s]{1,20}$'
 MEDICAL_CODE_REGEX = r'^\d+$'
 POSITIVE_INTEGER_REGEX = r'^[1-9]\d*$'
 PHONE_NUMBER_REGEX = r'^\d{11}$'
 
-# URL صفحه وب
-url = "https://membersearch.irimc.org/list/council/%d8%aa%d9%87%d8%b1%d8%a7%d9%86/%d8%aa%d9%87%d8%b1%d8%a7%d9%86/%d8%af%da%a9%d8%aa%d8%b1%d8%a7%db%8c%20%d8%ad%d8%b1%d9%81%d9%87%e2%80%8c%d8%a7%db%8c%20%d8%af%d9%86%d8%af%d8%a7%d9%86%d9%be%d8%b2%d8%b4%da%a9%db%8c/"
+
+def generate_unique_id(prefix):
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    return f"{prefix}{timestamp}"
 
 
-def get_doctor_data_from_website(url):
-    response = requests.get(url)
-    response.encoding = 'utf-8'
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, 'html.parser')
-        rows = soup.find('tbody').find_all('tr')
-        doctors = {}
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) > 1:
-                name_parts = cols[1].text.split()
-                name = " ".join(name_parts[1:]).strip()  # حذف کلمه "دکتر"
-                medical_id = cols[2].text.strip()  # شماره نظام پزشکی
-                doctors[name] = medical_id
-        cleaned_doctors = {name: id for name, id in doctors.items() if
-                           len(name) > 0 and not any(char.isdigit() for char in name.split()[0])}
-        return cleaned_doctors
-    else:
-        return None
+# Function to check if the doctor name exists in the verification sheet
+def check_doctor_name(full_name):
+    records = verification_sheet.get_all_records()
+    for record in records:
+        if record['Doctor Name'] == full_name:
+            return True
+    return False
 
 
-def search_doctor(doctor_name, doctors):
-    return doctor_name in doctors
+# Function to check if the doctor ID matches the name in the verification sheet
+def check_doctor_id(full_name, doctor_id):
+    records = verification_sheet.get_all_records()
+    for record in records:
+        if record['Doctor Name'] == full_name and str(record['Doctor ID']) == doctor_id:
+            return True
+    return False
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -70,15 +74,25 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text(f'لطفا نامی معتبر وارد کنید (فقط حروف فارسی، بدون اعداد):')
         return NAME
 
+
 async def get_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     last_name = update.message.text.strip()
     if len(last_name) <= MAX_LENGTH and re.match(PERSIAN_NAME_REGEX, last_name):
         context.user_data['last_name'] = last_name
-        await update.message.reply_text('لطفا تخصص خود را وارد کنید:')
-        return PROFESSION
+        full_name = f"{context.user_data['name']} {last_name}"
+
+        if check_doctor_name(full_name):
+            context.user_data['full_name'] = full_name
+            await update.message.reply_text('لطفا تخصص خود را وارد کنید:')
+            return PROFESSION
+        else:
+            await update.message.reply_text(
+                'نام پزشک در سیستم موجود نیست. لطفا دوباره وارد کنید یا "لغو" را وارد کنید:')
+            return LAST_NAME
     else:
         await update.message.reply_text(f'لطفا نام خانوادگی معتبر وارد کنید (فقط حروف فارسی، بدون اعداد):')
         return LAST_NAME
+
 
 async def get_profession(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['profession'] = update.message.text
@@ -91,27 +105,30 @@ async def get_medical_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if re.match(MEDICAL_CODE_REGEX, medical_code):
         context.user_data['medical_code'] = medical_code
 
-        # Collect all the data
-        name = context.user_data['name']
-        last_name = context.user_data['last_name']
-        full_name = f"{name} {last_name}"
-        profession = context.user_data['profession']
-        medical_code = context.user_data['medical_code']
+        # Check if the entered ID matches the name in the verification sheet
+        full_name = context.user_data['full_name']
+        if check_doctor_id(full_name, medical_code):
+            # Collect all the data
+            name = context.user_data['name']
+            last_name = context.user_data['last_name']
+            profession = context.user_data['profession']
+            medical_code = context.user_data['medical_code']
 
-        # Verify the doctor from the website
-        doctors_dict = get_doctor_data_from_website(url)
-        if doctors_dict:
-            if search_doctor(full_name, doctors_dict):
-                medical_id = doctors_dict[full_name]
-                await update.message.reply_text(
-                    f"دکتر {full_name} با کد نظام پزشکی {medical_id} با موفقیت ثبت شد.",
-                    reply_markup=ReplyKeyboardRemove())
-            else:
-                await update.message.reply_text("اطلاعات پزشک نامعتبر است.")
+            # Generate a unique ID for the doctor
+            unique_id = generate_unique_id("D")
+            context.user_data['unique_id'] = unique_id
+
+            # Save to Google Sheets
+            doctors_sheet.append_row([unique_id, full_name, profession, medical_code])
+
+            await update.message.reply_text(
+                f"دکتر {full_name} با کد نظام پزشکی {medical_code} و شناسه یکتا {unique_id} با موفقیت ثبت شد.",
+                reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
         else:
-            await update.message.reply_text("Error: Unable to access the doctor data.")
-
-        return ConversationHandler.END
+            await update.message.reply_text(
+                'کد نظام پزشکی با نام مطابقت ندارد. لطفا دوباره وارد کنید یا "لغو" را وارد کنید:')
+            return MEDICAL_CODE
     else:
         await update.message.reply_text('کد نظام پزشکی فقط باید شامل اعداد باشد. لطفا دوباره وارد کنید:')
         return MEDICAL_CODE
@@ -132,65 +149,31 @@ async def get_p_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text(f'لطفا نامی معتبر وارد کنید (فقط حروف فارسی، بدون اعداد):')
         return P_NAME
 
+
 async def get_p_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     last_name = update.message.text.strip()
-    if last_name == "-":
-        context.user_data['p_last_name'] = last_name  # Set last name as "-"
-        await update.message.reply_text('لطفا کد ملی خود را وارد کنید(می‌توانید - وارد کنید):')
-        return NATIONAL_ID
-    elif len(last_name) <= MAX_LENGTH and re.match(PERSIAN_NAME_REGEX, last_name):
+    if len(last_name) <= MAX_LENGTH and re.match(PERSIAN_NAME_REGEX, last_name):
         context.user_data['p_last_name'] = last_name
-        await update.message.reply_text('لطفا کد ملی خود را وارد کنید(می‌توانید - وارد کنید):')
+        await update.message.reply_text('لطفا کد ملی خود را وارد کنید:')
         return NATIONAL_ID
     else:
-        await update.message.reply_text(f'لطفا نام خانوادگی وارد کنید (فقط حروف فارسی، بدون اعداد همچنین می توانید - وارد کنید):')
+        await update.message.reply_text(f'لطفا نام خانوادگی معتبر وارد کنید (فقط حروف فارسی، بدون اعداد):')
         return P_LAST_NAME
 
 
-
-
-def check_code_meli(code):
-     # Allows "-" to be a valid input for no National ID
-
-    L = len(code)
-    if L < 8 or int(code) == 0:
-        return False
-
-    # Add leading zeros to ensure the code is 10 digits
-    code = ('0000' + code)[-10:]
-
-    # Check if the middle six digits are zero
-    if int(code[3:9]) == 0:
-        return False
-
-    c = int(code[9])
-    s = sum(int(code[i]) * (10 - i) for i in range(9))
-    s = s % 11
-
-    return (s < 2 and c == s) or (s >= 2 and c == (11 - s))
-
-
 async def get_national_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    national_id = update.message.text.strip()
-
-    if national_id == "-":
-        context.user_data['national_id'] = "-"  # Set national ID as "-"
-        await update.message.reply_text('لطفا تاریخ تولد خود را وارد کنید (به صورت YYYY-MM-DD):')
-        return DOB
-    elif check_code_meli(national_id):
+    national_id = update.message.text
+    if re.match(POSITIVE_INTEGER_REGEX, national_id):
         context.user_data['national_id'] = national_id
         await update.message.reply_text('لطفا تاریخ تولد خود را وارد کنید (به صورت YYYY-MM-DD):')
         return DOB
     else:
-        await update.message.reply_text(
-            'کد ملی وارد شده نامعتبر است. لطفا مجدداً وارد کنید یا - را وارد کنید اگر کد ملی ندارید:')
+        await update.message.reply_text('کد ملی باید یک عدد صحیح مثبت باشد. لطفا دوباره وارد کنید:')
         return NATIONAL_ID
-
 
 async def get_dob(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     dob_input = update.message.text
     try:
-        # Convert Shamsi date to Gregorian date
         shamsi_year, shamsi_month, shamsi_day = map(int, dob_input.split('-'))
         dob = jdatetime.date(shamsi_year, shamsi_month, shamsi_day).togregorian()
 
@@ -200,8 +183,8 @@ async def get_dob(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         # Check if age is between 3 and 18
         if 3 <= age <= 18:
-            context.user_data['dob'] = dob_input  # Store the Shamsi date
-            context.user_data['age'] = age  # Store the calculated age
+            context.user_data['dob'] = dob_input
+            context.user_data['age'] = age
             await update.message.reply_text('لطفا نام شهر خود را وارد کنید:')
             return CITY
         else:
@@ -209,14 +192,20 @@ async def get_dob(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             return DOB
 
     except ValueError:
-        # Handle wrong format or conversion error
         await update.message.reply_text('تاریخ تولد باید به صورت YYYY-MM-DD باشد و معتبر. لطفا دوباره وارد کنید:')
         return DOB
 
+
 async def get_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['city'] = update.message.text
-    await update.message.reply_text('لطفا شماره تلفن خود را وارد کنید (باید ۱۱ رقم باشد):')
-    return PHONE
+    city = update.message.text.strip()
+    if re.match(CITY_NAME_REGEX, city):
+        context.user_data['city'] = city
+        await update.message.reply_text('لطفا شماره تلفن خود را وارد کنید (باید ۱۱ رقم باشد):')
+        return PHONE
+    else:
+        await update.message.reply_text('نام شهر باید حداکثر ۲۰ حرف و فقط شامل حروف فارسی باشد. لطفا دوباره وارد کنید:')
+        return CITY
+
 
 async def get_phone_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     phone_number = update.message.text
@@ -224,30 +213,33 @@ async def get_phone_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data['phone_number'] = phone_number
 
         # Collect all the data
-        p_name = context.user_data.get('p_name', 'Unknown')
-        p_last_name = context.user_data.get('p_last_name', 'Unknown')
-        national_id = context.user_data.get('national_id', 'Not provided')
-        dob = context.user_data.get('dob', 'Unknown')
-        city = context.user_data.get('city', 'Unknown')
-        phone_number = context.user_data.get('phone_number', 'Unknown')
-        age = context.user_data.get('age', 'Unknown')
+        p_name = context.user_data['p_name']
+        p_last_name = context.user_data['p_last_name']
+        national_id = context.user_data['national_id']
+        dob = context.user_data['dob']
+        city = context.user_data['city']
+        phone_number = context.user_data['phone_number']
+        age = context.user_data['age']
 
-        # Save the data or process it as needed
-        # For demonstration, we'll just print it
-        patient_info = f"Name: {p_name}\nLast Name: {p_last_name}\nNational ID: {national_id}\nDate of Birth: {dob}\nAge: {age}\nCity: {city}\nPhone Number: {phone_number}"
-        print(patient_info)  # You can replace this with a call to save data to a database or file
+        # Generate a unique ID for the patient
+        unique_id = generate_unique_id("P")
+        context.user_data['unique_id'] = unique_id
 
-        await update.message.reply_text('ثبت نام بیمار با موفقیت انجام شد!', reply_markup=ReplyKeyboardRemove())
+        # Save to Google Sheets
+        patients_sheet.append_row([unique_id, p_name, p_last_name, national_id, dob, age, city, phone_number])
+
+        await update.message.reply_text(f'ثبت نام بیمار با شناسه یکتا {unique_id} با موفقیت انجام شد!',
+                                        reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     else:
         await update.message.reply_text('شماره تلفن باید دقیقا ۱۱ رقم باشد. لطفا دوباره وارد کنید:')
         return PHONE
 
 
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('ثبت نام لغو شد.', reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
+
 
 async def set_commands(application):
     # Set commands for the bot
@@ -257,6 +249,7 @@ async def set_commands(application):
         BotCommand("sabtbimar", "ثبت بیمار")
     ]
     await application.bot.set_my_commands(commands)
+
 
 async def main():
     # Replace 'YOUR_TOKEN' with the token you got from BotFather
@@ -306,6 +299,7 @@ async def main():
     finally:
         await application.stop()
         await application.shutdown()
+
 
 if __name__ == '__main__':
     try:
