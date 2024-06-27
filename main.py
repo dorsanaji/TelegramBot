@@ -134,23 +134,56 @@ async def get_p_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def get_p_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     last_name = update.message.text.strip()
-    if len(last_name) <= MAX_LENGTH and re.match(PERSIAN_NAME_REGEX, last_name):
+    if last_name == "-":
+        context.user_data['p_last_name'] = last_name  # Set last name as "-"
+        await update.message.reply_text('لطفا کد ملی خود را وارد کنید(می‌توانید - وارد کنید):')
+        return NATIONAL_ID
+    elif len(last_name) <= MAX_LENGTH and re.match(PERSIAN_NAME_REGEX, last_name):
         context.user_data['p_last_name'] = last_name
-        await update.message.reply_text('لطفا کد ملی خود را وارد کنید:')
+        await update.message.reply_text('لطفا کد ملی خود را وارد کنید(می‌توانید - وارد کنید):')
         return NATIONAL_ID
     else:
-        await update.message.reply_text(f'لطفا نام خانوادگی معتبر وارد کنید (فقط حروف فارسی، بدون اعداد):')
+        await update.message.reply_text(f'لطفا نام خانوادگی وارد کنید (فقط حروف فارسی، بدون اعداد همچنین می توانید - وارد کنید):')
         return P_LAST_NAME
 
 
+
+
+def check_code_meli(code):
+     # Allows "-" to be a valid input for no National ID
+
+    L = len(code)
+    if L < 8 or int(code) == 0:
+        return False
+
+    # Add leading zeros to ensure the code is 10 digits
+    code = ('0000' + code)[-10:]
+
+    # Check if the middle six digits are zero
+    if int(code[3:9]) == 0:
+        return False
+
+    c = int(code[9])
+    s = sum(int(code[i]) * (10 - i) for i in range(9))
+    s = s % 11
+
+    return (s < 2 and c == s) or (s >= 2 and c == (11 - s))
+
+
 async def get_national_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    national_id = update.message.text
-    if re.match(POSITIVE_INTEGER_REGEX, national_id):
+    national_id = update.message.text.strip()
+
+    if national_id == "-":
+        context.user_data['national_id'] = "-"  # Set national ID as "-"
+        await update.message.reply_text('لطفا تاریخ تولد خود را وارد کنید (به صورت YYYY-MM-DD):')
+        return DOB
+    elif check_code_meli(national_id):
         context.user_data['national_id'] = national_id
         await update.message.reply_text('لطفا تاریخ تولد خود را وارد کنید (به صورت YYYY-MM-DD):')
         return DOB
     else:
-        await update.message.reply_text('کد ملی باید یک عدد صحیح مثبت باشد. لطفا دوباره وارد کنید:')
+        await update.message.reply_text(
+            'کد ملی وارد شده نامعتبر است. لطفا مجدداً وارد کنید یا - را وارد کنید اگر کد ملی ندارید:')
         return NATIONAL_ID
 
 
@@ -191,17 +224,17 @@ async def get_phone_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data['phone_number'] = phone_number
 
         # Collect all the data
-        p_name = context.user_data['p_name']
-        p_last_name = context.user_data['p_last_name']
-        national_id = context.user_data['national_id']
-        dob = context.user_data['dob']
-        city = context.user_data['city']
-        phone_number = context.user_data['phone_number']
-        age = context.user_data['age']
+        p_name = context.user_data.get('p_name', 'Unknown')
+        p_last_name = context.user_data.get('p_last_name', 'Unknown')
+        national_id = context.user_data.get('national_id', 'Not provided')
+        dob = context.user_data.get('dob', 'Unknown')
+        city = context.user_data.get('city', 'Unknown')
+        phone_number = context.user_data.get('phone_number', 'Unknown')
+        age = context.user_data.get('age', 'Unknown')
 
         # Save the data or process it as needed
         # For demonstration, we'll just print it
-        patient_info = f"Name: {p_name}\nLast Name: {p_last_name}\nNational ID: {national_id}\nDate of Birth: {dob} (Age: {age} years)\nCity: {city}\nPhone Number: {phone_number}"
+        patient_info = f"Name: {p_name}\nLast Name: {p_last_name}\nNational ID: {national_id}\nDate of Birth: {dob}\nAge: {age}\nCity: {city}\nPhone Number: {phone_number}"
         print(patient_info)  # You can replace this with a call to save data to a database or file
 
         await update.message.reply_text('ثبت نام بیمار با موفقیت انجام شد!', reply_markup=ReplyKeyboardRemove())
